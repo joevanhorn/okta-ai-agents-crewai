@@ -1,0 +1,160 @@
+# ==============================================================================
+# ACCOUNT RISK MONITOR — HEADLESS AGENT IDENTITY (RESOURCE-SERVER PATH)
+# ==============================================================================
+#
+# REFERENCE EXAMPLE — adapt to your environment. This excerpt provisions the
+# Okta identity the crew uses: an API Services app (client_credentials +
+# private_key_jwt) plus a dedicated client-credentials policy on the custom
+# authorization server that fronts your MCP backend.
+#
+# Dependencies you supply (not in this file):
+#   - okta_auth_server.mcp_adapter        — a custom authorization server whose
+#                                            audience is your MCP backend, with the
+#                                            tool scopes (sfdc:read, sfdc:write,
+#                                            snow:read, snow:write) defined on it.
+#   - data.okta_group.everyone            — the Everyone group (client_credentials
+#                                            rules require a people condition, which
+#                                            the grant ignores).
+#   - providers: okta, tls, jwks (iwarapter/jwks), aws (for the SSM outputs).
+#
+# Connection model: the crew authenticates as ITSELF and calls the backend MCP
+# server directly with a scoped token — the "Resource Server" model, not a
+# brokered OAuth adapter. See docs/SECURING-CREWAI-WITH-OKTA.md for why.
+#
+# Least privilege: granted sfdc:read, sfdc:write, snow:read — deliberately NOT
+# snow:write, so the ServiceNow write tools never appear in the crew's toolset.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# RSA KEY PAIR (private_key_jwt)
+# ------------------------------------------------------------------------------
+
+resource "tls_private_key" "crewai_monitor" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+# Convert public key PEM to JWK components (kty, kid, e, n, alg, use)
+data "jwks_from_key" "crewai_monitor" {
+  key = tls_private_key.crewai_monitor.public_key_pem
+  kid = "monitor-key-1"
+  alg = "RS256"
+  use = "sig"
+}
+
+locals {
+  crewai_monitor_jwk    = jsondecode(data.jwks_from_key.crewai_monitor.jwks)
+  crewai_monitor_scopes = ["sfdc:read", "sfdc:write", "snow:read"]
+}
+
+# ------------------------------------------------------------------------------
+# API SERVICES APPLICATION (client_credentials)
+# ------------------------------------------------------------------------------
+
+resource "okta_app_oauth" "crewai_monitor" {
+  label  = "CrewAI Account Risk Monitor"
+  status = "ACTIVE"
+  type   = "service"
+
+  grant_types    = ["client_credentials"]
+  response_types = ["token"]
+
+  token_endpoint_auth_method = "private_key_jwt"
+
+  jwks {
+    kty = local.crewai_monitor_jwk.kty
+    kid = local.crewai_monitor_jwk.kid
+    e   = local.crewai_monitor_jwk.e
+    n   = local.crewai_monitor_jwk.n
+  }
+
+  hide_ios = true
+  hide_web = true
+}
+
+# ------------------------------------------------------------------------------
+# ACCESS POLICY ON THE MCP ADAPTER AUTH SERVER
+# ------------------------------------------------------------------------------
+# Dedicated policy scoped to ONLY this client. Pick a priority that doesn't
+# collide with any existing policies on the auth server.
+
+resource "okta_auth_server_policy" "crewai_monitor_access" {
+  auth_server_id   = okta_auth_server.mcp_adapter.id
+  name             = "CrewAI Monitor Access"
+  description      = "Client-credentials scope grant for the headless CrewAI Account Risk Monitor"
+  priority         = 3
+  status           = "ACTIVE"
+  client_whitelist = [okta_app_oauth.crewai_monitor.client_id]
+}
+
+# Single client_credentials rule: read across both systems + Salesforce write,
+# no ServiceNow write. The "people" condition is required by the API but is not
+# evaluated for client_credentials (no user in the flow), so it uses Everyone.
+resource "okta_auth_server_policy_rule" "crewai_monitor_cc" {
+  auth_server_id                = okta_auth_server.mcp_adapter.id
+  policy_id                     = okta_auth_server_policy.crewai_monitor_access.id
+  name                          = "Monitor client-credentials grant"
+  priority                      = 1
+  status                        = "ACTIVE"
+  grant_type_whitelist          = ["client_credentials"]
+  scope_whitelist               = local.crewai_monitor_scopes
+  group_whitelist               = [data.okta_group.everyone.id]
+  access_token_lifetime_minutes = 60
+}
+
+# ------------------------------------------------------------------------------
+# SECRETS — PRIVATE KEY + IDENTIFIERS IN SSM (optional convenience for AWS-hosted runs)
+# ------------------------------------------------------------------------------
+# The demo's okta_auth.py reads the private key from SSM (or a local env var).
+# The demo can read the key from SSM via OKTA_PRIVATE_KEY_SSM_PARAM (optional).
+
+resource "aws_ssm_parameter" "crewai_monitor_private_key" {
+  name        = "/your-org/crewai-monitor/private-key"
+  description = "RSA private key (PEM) for the CrewAI Account Risk Monitor service app (private_key_jwt)"
+  type        = "SecureString"
+  value       = tls_private_key.crewai_monitor.private_key_pem
+}
+
+resource "aws_ssm_parameter" "crewai_monitor_client_id" {
+  name        = "/your-org/crewai-monitor/client-id"
+  description = "Client ID for the CrewAI Account Risk Monitor service app"
+  type        = "String"
+  value       = okta_app_oauth.crewai_monitor.client_id
+}
+
+resource "aws_ssm_parameter" "crewai_monitor_key_id" {
+  name        = "/your-org/crewai-monitor/key-id"
+  description = "JWK key ID for the CrewAI Account Risk Monitor service app"
+  type        = "String"
+  value       = "monitor-key-1"
+}
+
+# ------------------------------------------------------------------------------
+# OUTPUTS
+# ------------------------------------------------------------------------------
+
+output "crewai_monitor_client_id" {
+  description = "CrewAI Account Risk Monitor client ID (OKTA_CLIENT_ID)"
+  value       = okta_app_oauth.crewai_monitor.client_id
+}
+
+output "crewai_monitor_key_id" {
+  description = "CrewAI Account Risk Monitor JWK key ID"
+  value       = "monitor-key-1"
+}
+
+output "crewai_monitor_scopes" {
+  description = "Scopes granted to the monitor (ceiling on visible tools)"
+  value       = join(" ", local.crewai_monitor_scopes)
+}
+
+output "crewai_monitor_token_url" {
+  description = "Token endpoint for minting the monitor's client_credentials token"
+  value       = "${okta_auth_server.mcp_adapter.issuer}/v1/token"
+}
+
+output "crewai_monitor_private_key_pem" {
+  description = "RSA private key (PEM) — also stored in SSM; sensitive"
+  value       = tls_private_key.crewai_monitor.private_key_pem
+  sensitive   = true
+}

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "account-risk-monitor"
+version = "0.1.0"
+description = "Autonomous CrewAI Account Risk Monitor — an Okta-governed, headless multi-agent crew over an MCP backend"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Okta Professional Services" }]
+keywords = ["crewai", "okta", "mcp", "ai-agents"]
+
+# Pinned to the versions this demo was verified against, with room for patch
+# updates. crewai moves fast — the upper bounds keep a fresh install reproducible.
+dependencies = [
+    "crewai>=1.14.6,<2.0",
+    "crewai-tools[mcp]>=1.14.6,<2.0",
+    "requests>=2.31,<3.0",
+    "python-dotenv>=1.0,<2.0",
+    "PyJWT[crypto]>=2.8,<3.0",
+    "boto3>=1.34",
+]
+
+[project.scripts]
+account-risk-monitor = "run:main"
+account-risk-monitor-smoke = "smoke_test:main"
+
+[tool.setuptools]
+# Flat single-file modules (installed into an isolated venv by setup.sh / pipx).
+py-modules = ["run", "monitor_crew", "okta_auth", "smoke_test"]

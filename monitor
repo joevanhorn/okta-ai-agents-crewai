@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# ABOUTME: Convenience wrapper — runs the monitor from .venv without activating it.
+# ABOUTME: Usage: ./monitor --once | ./monitor --watch --interval 300 | ./monitor smoke
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+
+if [ ! -x "$here/.venv/bin/account-risk-monitor" ]; then
+  echo "Not installed yet — run ./setup.sh first." >&2
+  exit 1
+fi
+
+# `./monitor smoke` runs the access smoke test; anything else goes to the crew CLI.
+if [ "${1:-}" = "smoke" ]; then
+  exec "$here/.venv/bin/account-risk-monitor-smoke"
+fi
+exec "$here/.venv/bin/account-risk-monitor" "$@"
