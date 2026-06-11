@@ -7,3 +7,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Never commit private keys
+*.pem
+*.key
